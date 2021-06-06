@@ -7,6 +7,7 @@ worldwide. This software is distributed without any warranty.
 See <http://creativecommons.org/publicdomain/zero/1.0/>. */
 
 #include <stdint.h>
+#include "xoshiro128plus.h"
 
 /* This is xoshiro128+ 1.0, our best and fastest 32-bit generator for 32-bit
    floating-point numbers. We suggest to use its upper bits for
@@ -27,7 +28,21 @@ static inline uint32_t rotl(const uint32_t x, int k) {
 }
 
 
-static uint32_t s[4];
+static uint32_t s[NUM_SEED] = { 0,0,0,0 };
+
+void seed(uint32_t seed[NUM_SEED])
+{
+    int i;
+
+    for (i=0; i<NUM_SEED; i++) {
+        s[i] = seed[i];
+    }
+}
+
+uint32_t get_seed(int sidx)
+{
+    return s[sidx];
+}
 
 uint32_t next(void) {
 	const uint32_t result = s[0] + s[3];
@@ -58,7 +73,7 @@ void jump(void) {
 	uint32_t s1 = 0;
 	uint32_t s2 = 0;
 	uint32_t s3 = 0;
-	for(int i = 0; i < sizeof JUMP / sizeof *JUMP; i++)
+	for(long unsigned int i = 0; i < sizeof JUMP / sizeof *JUMP; i++)
 		for(int b = 0; b < 32; b++) {
 			if (JUMP[i] & UINT32_C(1) << b) {
 				s0 ^= s[0];
@@ -88,7 +103,7 @@ void long_jump(void) {
 	uint32_t s1 = 0;
 	uint32_t s2 = 0;
 	uint32_t s3 = 0;
-	for(int i = 0; i < sizeof LONG_JUMP / sizeof *LONG_JUMP; i++)
+	for(long unsigned int i = 0; i < sizeof LONG_JUMP / sizeof *LONG_JUMP; i++)
 		for(int b = 0; b < 32; b++) {
 			if (LONG_JUMP[i] & UINT32_C(1) << b) {
 				s0 ^= s[0];

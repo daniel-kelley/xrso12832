@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <math.h>
 
 #include "xoshiro128plus.h"
 
@@ -29,6 +30,7 @@ struct info {
     int verbose;
     int skip;
     int header;
+    int fp;
     FILE *output;
     const char *output_file;
 };
@@ -94,6 +96,22 @@ static void header(struct info *info)
         "numbit: %d\n", info->numbit);
 }
 
+static float ufloat(uint32_t val, uint32_t shift)
+{
+    float num = val>>shift;
+    float den = (1<<(32-shift))-1;
+    float fval = num/den;
+    return fval;
+}
+
+static float sfloat(uint32_t val)
+{
+    uint32_t sign = val >> 31;
+    uint32_t uval = val&0x7fffffff;
+    float uflt = ufloat(uval, 7);
+    return sign ? -uflt : uflt;
+}
+
 static void cooked(struct info *info)
 {
     if (info->mask) {
@@ -109,7 +127,33 @@ static void cooked(struct info *info)
         if (info->mask) {
             val = shift_and_mask(info, val);
         }
-        fprintf(info->output, "%u\n", val);
+        if (info->fp == 0) {
+            fprintf(info->output, "%u\n", val);
+        } else {
+            float fval = 0.0;
+            int fpr = abs(info->fp); /* 1,2,4,8,16 */
+
+            if (info->fp > 0) {
+                fval = ufloat(val, 7);
+            } else {
+                fval = sfloat(val);
+            }
+
+            fprintf(info->output, "%+2.25f", fval);
+            if (fpr >= 2) {
+                fprintf(info->output, " 0x%08x", val);
+            }
+            if (fpr >= 4) {
+                int exp;
+                float frac = frexp(fval, &exp);
+                fprintf(info->output, " %+1.25f %8d", frac, exp);
+            }
+            if (fpr >= 8) {
+                char *fpp = (char *)&fval;
+                fprintf(info->output, " 0x%08x", *(uint32_t *)fpp);
+            }
+            fprintf(info->output, "\n");
+        }
     }
 }
 
@@ -160,6 +204,8 @@ static void usage(const char *prog)
     fprintf(stderr,"  -h        Print this message\n");
     fprintf(stderr,"  -r        Raw mode\n");
     fprintf(stderr,"  -H        Print dieharder header in cooked mode\n");
+    fprintf(stderr,"  -f        positive float 0..1\n");
+    fprintf(stderr,"  -F        signed float -1..1\n");
     fprintf(stderr,"  -o file   output file\n");
     fprintf(stderr,"  -n count  #numbers\n");
     fprintf(stderr,"  -s val    Initial seed(s)\n");
@@ -179,7 +225,7 @@ int main(int argc, char *argv[])
     info.numbit = 32;
     info.output = stdout;
 
-    while ((c = getopt(argc, argv, "n:s:j:l:o:M:S:rvHh")) != EOF) {
+    while ((c = getopt(argc, argv, "n:s:j:l:o:M:S:fFRrvHh")) != EOF) {
         switch (c) {
         case 'n':
             info.count = strtoul(optarg,0,0);
@@ -212,6 +258,15 @@ int main(int argc, char *argv[])
             break;
         case 'H':
             info.header = 1;
+            break;
+        case 'f':
+            info.fp = 1;
+            break;
+        case 'F':
+            info.fp = -1;
+            break;
+        case 'R':
+            info.fp *= 2;
             break;
         case 'h':
             usage(argv[0]);

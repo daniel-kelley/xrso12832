@@ -14,8 +14,25 @@
 #include <unistd.h>
 #include <errno.h>
 #include <math.h>
+#include <float.h>
+#include <stdint.h>
 
 #include "xoshiro128plus.h"
+
+#define DEFAULT_FP_SHIFT 7
+#define INFO_SHIFT (info.shift ? info.shift : DEFAULT_FP_SHIFT)
+
+struct freq {
+    unsigned long long set[32];
+    unsigned long long clr[32];
+};
+
+static struct freq i_freq;
+static struct freq f_freq;
+static uint32_t min_val = UINT32_MAX;
+static uint32_t max_val = 0;
+static float min_fval = FLT_MAX;
+static float max_fval = 0.0;
 
 struct info {
     uint32_t count;
@@ -31,6 +48,7 @@ struct info {
     int skip;
     int header;
     int fp;
+    int track;
     FILE *output;
     const char *output_file;
 };
@@ -68,6 +86,80 @@ static void set_numbit(struct info *info)
     }
 }
 
+static void track_freq(struct freq *freq, uint32_t val)
+{
+    int i;
+
+    for (i=0; i<32; i++) {
+        if (val&(1<<i)) {
+            freq->set[i]++;
+        } else {
+            freq->clr[i]++;
+        }
+    }
+}
+
+static void itrack(uint32_t val)
+{
+    track_freq(&i_freq, val);
+
+    if (val < min_val) {
+        min_val = val;
+    }
+
+    if (val > max_val) {
+        max_val = val;
+    }
+}
+
+static void ftrack(float fval, uint32_t fvalbits)
+{
+    track_freq(&f_freq, fvalbits);
+
+    if (fval < min_fval) {
+        min_fval = fval;
+    }
+
+    if (fval > max_fval) {
+        max_fval = fval;
+    }
+}
+
+static double sc_ratio(const struct freq *freq, int idx)
+{
+    double num = (double)freq->set[idx];
+    double den = (double)freq->clr[idx];
+    return (num/den);
+}
+
+static void track_report(const char *name, const struct freq *freq)
+{
+    int i;
+
+    fprintf(stderr, "%s frequency report\n", name);
+    for (i=0; i<32; i++) {
+        fprintf(stderr,
+                "%2d %llu %llu %g\n",
+                i,
+                freq->set[i],
+                freq->clr[i],
+                sc_ratio(freq,i));
+    }
+}
+
+static void report(struct info *info)
+{
+    track_report("int",&i_freq);
+    fprintf(stderr, "min: %10u\n", min_val);
+    fprintf(stderr, "max: %10u\n", max_val);
+
+    if (info->fp) {
+        track_report("fp",&f_freq);
+        fprintf(stderr, "min: %+g\n", min_fval);
+        fprintf(stderr, "max: %+g\n", max_fval);
+    }
+}
+
 static void header(struct info *info)
 {
     uint32_t s0 = get_seed(0);
@@ -96,19 +188,19 @@ static void header(struct info *info)
         "numbit: %d\n", info->numbit);
 }
 
-static float ufloat(uint32_t val, uint32_t shift)
+static float ufloat(uint32_t val, uint32_t valbits, uint32_t shift)
 {
     float num = val>>shift;
-    float den = (1<<(32-shift))-1;
+    float den = (1<<(valbits-shift))-1;
     float fval = num/den;
     return fval;
 }
 
-static float sfloat(uint32_t val)
+static float sfloat(uint32_t val, uint32_t valbits, uint32_t shift)
 {
-    uint32_t sign = val >> 31;
-    uint32_t uval = val&0x7fffffff;
-    float uflt = ufloat(uval, 7);
+    uint32_t sign = val >> (valbits-1);
+    uint32_t uval = val & (UINT32_MAX>>1);
+    float uflt = ufloat(uval, valbits-1, shift-1);
     return sign ? -uflt : uflt;
 }
 
@@ -129,14 +221,18 @@ static void cooked(struct info *info)
         }
         if (info->fp == 0) {
             fprintf(info->output, "%u\n", val);
+            if (info->track) {
+                itrack(val);
+            }
         } else {
             float fval = 0.0;
             int fpr = abs(info->fp); /* 1,2,4,8,16 */
+            char *fpp = (char *)&fval;
 
             if (info->fp > 0) {
-                fval = ufloat(val, 7);
+                fval = ufloat(val, 32, info->shift);
             } else {
-                fval = sfloat(val);
+                fval = sfloat(val, 32, info->shift);
             }
 
             fprintf(info->output, "%+2.25f", fval);
@@ -149,10 +245,14 @@ static void cooked(struct info *info)
                 fprintf(info->output, " %+1.25f %8d", frac, exp);
             }
             if (fpr >= 8) {
-                char *fpp = (char *)&fval;
                 fprintf(info->output, " 0x%08x", *(uint32_t *)fpp);
             }
             fprintf(info->output, "\n");
+
+            if (info->track) {
+                itrack(val);
+                ftrack(fval, *(uint32_t *)fpp);
+            }
         }
     }
 }
@@ -195,6 +295,10 @@ static int run(struct info *info)
         cooked(info);
     }
 
+    if (info->track) {
+        report(info);
+    }
+
     return 0;
 }
 
@@ -206,13 +310,16 @@ static void usage(const char *prog)
     fprintf(stderr,"  -H        Print dieharder header in cooked mode\n");
     fprintf(stderr,"  -f        positive float 0..1\n");
     fprintf(stderr,"  -F        signed float -1..1\n");
+    fprintf(stderr,"  -R        increase fp report verbosity\n");
+    fprintf(stderr,"  -t        report bit frequencies\n");
+    fprintf(stderr,"  -v        verbose mode\n");
     fprintf(stderr,"  -o file   output file\n");
     fprintf(stderr,"  -n count  #numbers\n");
     fprintf(stderr,"  -s val    Initial seed(s)\n");
     fprintf(stderr,"  -j n      #short jumps\n");
     fprintf(stderr,"  -l n      #long jumps\n");
     fprintf(stderr,"  -M n      integer mask\n");
-    fprintf(stderr,"  -S n      integer shift\n");
+    fprintf(stderr,"  -S n      integer/fp shift\n");
 }
 
 int main(int argc, char *argv[])
@@ -225,7 +332,7 @@ int main(int argc, char *argv[])
     info.numbit = 32;
     info.output = stdout;
 
-    while ((c = getopt(argc, argv, "n:s:j:l:o:M:S:fFRrvHh")) != EOF) {
+    while ((c = getopt(argc, argv, "n:s:j:l:o:M:S:fFRtrvHh")) != EOF) {
         switch (c) {
         case 'n':
             info.count = strtoul(optarg,0,0);
@@ -260,13 +367,18 @@ int main(int argc, char *argv[])
             info.header = 1;
             break;
         case 'f':
+            info.shift = INFO_SHIFT;
             info.fp = 1;
             break;
         case 'F':
+            info.shift = INFO_SHIFT;
             info.fp = -1;
             break;
         case 'R':
             info.fp *= 2;
+            break;
+        case 't':
+            info.track = 1;
             break;
         case 'h':
             usage(argv[0]);

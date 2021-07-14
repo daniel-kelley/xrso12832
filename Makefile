@@ -32,13 +32,16 @@ DEP := $(SRC:%.c=%.d)
 
 VG ?= valgrind --leak-check=full
 
-.PHONY: all install uninstall clean
+.PHONY: all clean check dieharder
 
 all: $(PROG)
 
 $(PROG): $(OBJ)
 
 check: $(PROG)
+	./$(PROG) -F -n 10
+
+dieharder: $(PROG)
 	./check.sh $(CHECK_ARGS)
 
 clean:
